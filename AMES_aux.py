@@ -162,9 +162,11 @@ def get_activations(model, x, p, layers, filters, pad_len=800, bs = 56):
     act_last2 = K.function([model.input[0], model.input[1]],[model.layers[layers[2]].output])
     mol_act = K.function([model.input[0], model.input[1]],[model.layers[layers[3]].output])
 
-    #print("activations:",  act_last0)
     #print(model.input[0], model.input[1], model.layers[layers[1]].output)
-    #print("layers", len(model.layers))
+    #model.input[0] = Tensor("input_1:0", shape=(None, 150, 44), dtype=float32)
+    #model.input[1] = Tensor("input_2:0", shape=(None, 1200, 151), dtype=float32)
+    #model.layers[layers[1]].output) = Tensor("average_pooling1d_1/Identity:0", shape=(None, 150, 1024), dtype=float32)
+    #print("layers", len(model.layers)) ==> 19
 
     for b in range(int(dim/bs)+int(dim%bs>0)):
         train0 = act_last0([x[bs*b:bs*(b+1)], p[bs*b:bs*(b+1)],False])[0].reshape(-1,filters[0])
@@ -173,8 +175,8 @@ def get_activations(model, x, p, layers, filters, pad_len=800, bs = 56):
         mol_layer = mol_act([x[bs*b:bs*(b+1)], p[bs*b:bs*(b+1)],False])[0].reshape(-1,mol_shape)
         act_atom[bs*b*atoms:bs*(b+1)*atoms] = np.concatenate([train0, train1, train2], axis=1)
         act_mol[bs*b:bs*(b+1)] = mol_layer
-    #print(act_atom.shape)
-    #print(act_mol.shape)
+    #print(act_atom.shape) ==> (115050, 3072) = (767*150, 3072)
+    #print(act_mol.shape) ==> (767, 1024)
     return(act_atom, act_mol)
 
 def reduce_act(act, mols, nr_atoms=100):
@@ -211,9 +213,9 @@ def reduce_act(act, mols, nr_atoms=100):
             aa.append(atom)
             idx.append(rep_idx[i])
 
-    #print(unique_reduced.shape)
-    #print(len(idx))
-    #print(len(aa))
+    #print(unique_reduced.shape) ==> (8700, 3072)
+    #print(len(idx)) 8700
+    #print(len(aa)) 8700
     return unique_reduced, idx, aa
 
 def get_substruct(mol, atom_idx, radius=1):
