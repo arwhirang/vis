@@ -93,3 +93,20 @@ mols = valid_x
 #returns an array of atom representations and molecule representations
 atom_act, mol_act = get_activations(model, x, p, layers=[5,9,13,15], filters=filters, bs=8, pad_len=pad_len)
 unique, idx, a_idx = reduce_act(atom_act, mols, nr_atoms=nr_atoms)
+#unique_reduced.shape = (8574 <== changes every time, 3072)
+#len(idx) = 8574 <== changes every time
+#len(aa) = 8574 <== changes every time
+
+#function for atom/substructure scores
+atom_scoring = K.function([model.layers[16].input],[model.layers[-1].output]) #adjust layers index to your architecture
+
+tmp = atom_scoring([unique[:,-filters[-1]:]/nr_atoms, False])
+print(len(tmp), tmp[0].shape)#1, (8574 <==changes every time, 1)
+
+#returns the scores for each atom/substructure 3rd layer representation 
+a_scores = atom_scoring([unique[:,-filters[-1]:]/nr_atoms, False])[0][:,0]
+print(a_scores.shape)#8574 <==changes every time
+atoms_sorted = np.argsort(a_scores)[::-1][:50] #take 50 most important substructures
+print(atoms_sorted.shape)#50
+print(atoms_sorted)
+substr = [get_substruct(np.array(mols)[idx][e],int(a_idx[e]),3) for e in atoms_sorted] #we used the 3 convolutional layers
