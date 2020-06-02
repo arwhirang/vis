@@ -25,11 +25,10 @@ outChannelInt = 10
 
 X = np.expand_dims(x_train.reshape(60000, 28, 28), 3)
 Y = tf.one_hot(y_train, 10)
-X1 = tf.cast(X[:,:,:14], tf.float32)
-X2 = tf.cast(X[:,:,14:], tf.float32)
-train_tf = tf.data.Dataset.from_tensor_slices((X1, X2, Y)).batch(batch_size).shuffle(10000)
+X = tf.cast(X, tf.float32)
+train_tf = tf.data.Dataset.from_tensor_slices((X, Y)).batch(batch_size).shuffle(10000)
 
-print (X1.shape, Y.shape)
+print (X.shape, Y.shape)
 
 class IGtest(tf.keras.Model):
     def __init__(self):
@@ -48,25 +47,16 @@ class IGtest(tf.keras.Model):
         self.dp3 = tf.keras.layers.Dropout(0.5)
         self.dens2 = tf.keras.layers.Dense(outChannelInt, activation='softmax')
 
-        inter, stepsize, ref = ig.linear_inpterpolation(_x, num_steps=15)
-        
-    def call(self, inp1, inp2, training):
-        l = self.conv1(inp1)
+    def call(self, inp, training):
+        l = self.conv1(inp)
         l = self.conv2(l)
         l = self.mp1(l)
         l = self.dp1(l)
-        
-        l2 = self.conv3(inp2)
-        l2 = self.conv4(l2)
-        l2 = self.mp2(l2)
-        l2 = self.dp2(l2)
+        l = tf.keras.layers.Flatten()(l)
+        l = self.dens1(l)
+        l = self.dp3(l)
+        x_out = self.dens2(l)
 
-        x = tf.keras.layers.Concatenate()([l, l2])
-        x = tf.keras.layers.Flatten()(x)
-        x = self.dens1(x)
-        x = self.dp3(x)
-        x_out = self.dens2(x)
-        
         return x_out
 """    
 l_in = tf.keras.Input(shape=(28, 14, 1), )
@@ -81,14 +71,12 @@ def loss_function(real, pred_logit):
     cross_ent = lossFunc(y_true=real, y_pred=pred_logit)
     return tf.reduce_sum(cross_ent)
 
-def train_step(inp_X1, inp_X2, inp_trainY):
+def train_step(inp_X, inp_trainY):
     with tf.GradientTape() as tape:
         #res = model(tf.nn.embedding_lookup(embeddings_, inp_trainX), index, True)
-        res = model(inp_X1, inp_X2, True)
+        res = model(inp_X, True)
         loss = loss_function(inp_trainY, res)
     
-    print(model.variables)
-
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(grads, model.trainable_weights))
     meanFunc.update_state(loss)
@@ -100,20 +88,36 @@ def train_step(inp_X1, inp_X2, inp_trainY):
 for epoch in range(15):
     meanFunc.reset_states()
     #start = time.time()
-    for tf_x1, tf_x2, tf_y1 in train_tf:
-        train_step(tf_x1, tf_x2, tf_y1)
-            
-#model.fit([X1, X2], Y, epochs=15, batch_size=128, verbose=0)
-#predicted = model.predict([X1, X2])
-ig = integrated_gradients(model, [X1, X2], optimizer, outChannelInt) # inputs=[X1, X2], opt=optimizer, outChannelInt)
+    for tf_x, tf_y in train_tf:
+        train_step(tf_x, tf_y)
+
+inter_list = []
+preds_list = []
+step_whole = []
+for tf_x, tf_y in train_tf:
+    inter, stepsize, ref = ig.linear_inpterpolation(tf_x, num_steps=15)
+    inter_list.extend(inter)
+    step_whole.extend(stepsize)
+    tmpPred = model(inter, False)
+    preds_list.append(tmpPred)
+
+explanations = []
+for i in range(10):
+    explanations.append(ig.build_ig(inter_list, step_whole, preds_list[:, i], num_steps=15))
+        
+ 
 
 
-index = np.random.randint(55000)
-pred = np.argmax(predicted[index])
-print ("prediction:", pred)
 
-################# Calling Explain() function #############################
-ex = ig.explain([X1[index, :, :, :], X2[index, :, :, :]], outc=pred)
-##########################################################################
 
-th = max(np.abs(np.min([np.min(ex[0]), np.min(ex[1])])), np.abs(np.max([np.max(ex[0]), np.max(ex[1])])))
+
+
+
+
+
+
+
+
+
+
+
