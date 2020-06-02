@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 #import matplotlib.pyplot as plt
-from IntegratedGradients import *
+import TFIntegratedG as ig
 #from tensorflow.examples.tutorials.mnist import input_data
 import os
 
@@ -20,7 +20,7 @@ else:
 print("current pid:", os.getpid())
 
 batch_size = 64
-#mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
+outChannelInt = 10
 (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
 
 X = np.expand_dims(x_train.reshape(60000, 28, 28), 3)
@@ -46,7 +46,9 @@ class IGtest(tf.keras.Model):
         
         self.dens1 = tf.keras.layers.Dense(128, activation='relu')
         self.dp3 = tf.keras.layers.Dropout(0.5)
-        self.dens2 = tf.keras.layers.Dense(10, activation='softmax')
+        self.dens2 = tf.keras.layers.Dense(outChannelInt, activation='softmax')
+
+        inter, stepsize, ref = ig.linear_inpterpolation(_x, num_steps=15)
         
     def call(self, inp1, inp2, training):
         l = self.conv1(inp1)
@@ -84,6 +86,8 @@ def train_step(inp_X1, inp_X2, inp_trainY):
         #res = model(tf.nn.embedding_lookup(embeddings_, inp_trainX), index, True)
         res = model(inp_X1, inp_X2, True)
         loss = loss_function(inp_trainY, res)
+    
+    print(model.variables)
 
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(grads, model.trainable_weights))
@@ -101,7 +105,7 @@ for epoch in range(15):
             
 #model.fit([X1, X2], Y, epochs=15, batch_size=128, verbose=0)
 #predicted = model.predict([X1, X2])
-ig = integrated_gradients(model, [X1, X2])
+ig = integrated_gradients(model, [X1, X2], optimizer, outChannelInt) # inputs=[X1, X2], opt=optimizer, outChannelInt)
 
 
 index = np.random.randint(55000)
