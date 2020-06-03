@@ -96,15 +96,25 @@ for epoch in range(15):
 #https://github.com/ankurtaly/Integrated-Gradients/blob/master/IntegratedGradients/integrated_gradients.py
 def ig_scaledInp(inp, baseline, steps=50):
     if baseline is None:
-        baseline = 0*inp
+        baseline = tf.zeros_like(inp)
     assert(baseline.shape == inp.shape)
 
-    # Scale input and compute gradients.
-    scaled_inputs = [baseline + (float(i)/steps)*(inp - baseline) for i in range(0, steps + 1)]
-    #predictions, grads = predictions_and_gradients(scaled_inputs, target_label_index)  # shapes: <steps+1>, <steps+1, inp.shape>
-    return scaled_inputs, baseline
 
+    inp_ = tf.stack([inp for _ in range(steps)])
+    baseline_ = tf.stack([baseline for _ in range(steps)])
+    # Get difference between sample and reference
+    dif = inp_ - baseline_ 
+    # Get multipliers
+    multiplier = tf.divide(tf.stack([tf.ones_like(inp)*i for i in range(steps)]), steps)
+    interploated_dif = tf.multiply(dif, multiplier)
+    _shape = [-1] + [int(s) for s in inp.get_shape()[1:]]
+    interploated = tf.reshape(interploated_dif, shape=_shape)
+    baseline_ = tf.reshape(baseline_, shape=_shape)
+    print(interploated.shape, baseline_.shape)
+    return interploated, baseline_
 
+    
+    
     # Use trapezoidal rule to approximate the integral.
     # See Section 4 of the following paper for an accuracy comparison between
     # left, right, and trapezoidal IG approximations:
@@ -113,7 +123,7 @@ def ig_scaledInp(inp, baseline, steps=50):
 
 
 for tf_x, tf_y in train_tf:
-    scaledX, baseline = ig_scaledInp(tf_x, None, steps=15)
+    scaledX, baseline = ig_scaledInp(tf_x, None, steps=3)
     scaledXV = tf.Variable(scaledX, dtype=tf.float32)
     with tf.GradientTape() as g:
         g.watch(scaledXV)
@@ -122,7 +132,7 @@ for tf_x, tf_y in train_tf:
 
     grads = (grads[:-1] + grads[1:]) / 2.0
     avg_grads = np.average(grads, axis = 0)
-    integrated_gradients = (inp - baseline)*avg_grads
+    integrated_gradients = (scaledXV - baseline)*avg_grads
     print(integrated_gradients.shape)
 
 """
