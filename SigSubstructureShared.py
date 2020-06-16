@@ -30,7 +30,7 @@ def sigIdxAtom(sigIdx, currSmiList):
 
 def get_substruct(mol, atom_idx_list, radius = 3):
     # this function creates submolecules
-    smiDic = {}
+    smiDic = {}#key, value: <substr in str, list of amap> / each of the amap elements are the indices of the significant atoms
     for r in range(2, radius)[::-1]:
         #can extract the submolecule consisting of all atoms within a radius of r of atom_idx
         for atom_idx in atom_idx_list:
@@ -46,16 +46,62 @@ def get_substruct(mol, atom_idx_list, radius = 3):
                 smiDic[subsmi] = amap.keys()
     return smiDic
 
+#I found that the atommap attaches special bond characters (not all cases...) if they are inside the consecutive atoms
+#this func insert the sign "-" between the indicies of the succesive atoms
+def get_span_indicies(dicSubstrAmap):
+    dicSpan = {}
+    for substr, atomlist in dicSubstrAmap.items():
+        spanlist = []
+        prevIndex = -999
+        for i, atomIndex in enumerate(atomlist):
+            if atomIndex - prevIndex == 1:
+                spanlist.append("-")
+
+            spanlist.append(atomIndex)
+            prevIndex = atomIndex
+        dicSpan[substr] = spanlist
+    return dicSpan
+
+#the atommap of the rdkit calculates atom indicies only. this func changes it into a true SMILES indicies
+def get_real_indicies(dicSpan, currSmiList):
+    twoChars = {"AL": 1, "al": 1, "Al": 1, "AU": 1, "au": 1, "Au": 1, "MG": 1, "mg": 1, "Mg": 1, "ZN": 1, "zn": 1,
+                "Zn": 1, "CA": 1, "ca": 1, "Ca": 1, "NA": 1, "na": 1, "Na": 1, "CL": 1, "cl": 1, "Cl": 1, "FE": 1,
+                "fe": 1, "Fe": 1, "BR": 1, "br": 1, "Br": 1, "SI": 1, "si": 1, "Si": 1}
+    dicReal = {}
+    for substr, spanlist in dicSpan.items():
+
+        listtmp = []
+        atomcnt = -1  # first atom is 0
+        idx_span = 0
+        includeFlag = False
+        for idx, ele in enumerate(currSmiList):
+            if ele in twoChars or ele.isalpha():  # or ele.isdigit():
+                if ele == "@" or ele == "H":  # these are the same as the bond signals
+                    continue
+                atomcnt += 1
+                if atomcnt == spanlist[idx_span]:
+                    includeFlag = False
+                    listtmp.append(idx)
+                    idx_span += 1
+                    if len(spanlist) == idx_span:
+                        break
+
+                    if spanlist[idx_span] == "-":
+                        idx_span += 1
+                        includeFlag = True
+            if includeFlag:
+                listtmp.append(idx)
+        dicReal[substr] = listtmp
+    return dicReal
+
 # this function updates dicSMA
 #key, value: <substr in str, list of scores> / each of the scores are the sum of the atoms in the smart
-def get_scores(substr_dic, currsmi, layer_weights, dicSMA):
-    for substr in substr_dic.keys():
-        start = get_start(substr, currsmi)
-        if start == -1:
-            print("error!", substr, currsmi)
+def get_scores(dicReal, layer_weights, dicSMA):
+    for substr, realIndicies in dicReal.items():
         score = 0.0
-        for i in range(start, start + len(substr)):
+        for i in realIndicies:
             score += layer_weights[i]
+
         if substr in dicSMA:
             dicSMA[substr].append(score)
         else:
@@ -96,9 +142,11 @@ for i, currSmiList in enumerate(teststr):
 
     th_Until7thW = sorted(layer1_sum[i])[-7]
     sigIdxList = idxForSignificants(th_Until7thW, layer1_sum[i])
-    sigIdx_general, sigIdx_atom = sigIdxAtom(sigIdxList, teststr[i])
-    substrDic = get_substruct(currmol, sigIdx_atom)#substrs of the current smi
-    get_scores(substr_list, currsmi, layer1_sum[i], dicSMA)
+    sigIdx_general, sigIdx_atom = sigIdxAtom(sigIdxList, currSmiList)
+    dicSubstrAmap = get_substruct(currmol, sigIdx_atom)#substrs of the current smi
+    dicSpan = get_span_indicies(dicSubstrAmap)
+    dicReal = get_real_indicies(dicSpan, currSmiList)
+    get_scores(dicReal, layer1_sum[i], dicSMA)
 
 #calculate global mean score of every substrs
 gmSMA = {}
