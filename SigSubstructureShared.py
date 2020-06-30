@@ -1,172 +1,78 @@
 import pickle
 import numpy as np
-from rdkit.Chem.Draw import rdMolDraw2D
-from rdkit import Chem
-from IPython.display import SVG
-from rdkit.Chem.Draw import MolToImage
-from rdkit.Chem import Draw
+
 import tensorflow as tf
 import os
-from scipy import stats
+from VisUtil import *
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
+###############################
+#set the gpu parameters for tensorflow 2
+###############################
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"#", 1, 2, 3"
 print("current pid:", os.getpid())
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
-        tf.config.experimental.set_visible_devices(gpus[2], 'GPU')
-        tf.config.experimental.set_memory_growth(gpus[2], True)
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        tf.config.experimental.set_memory_growth(gpus[0], True)
         print("should be ok...right?")
     except RuntimeError as e:
         print(e)
 else:
     print("gpu unlimited?")
 
-USE_DUMPED_DATA = True
+USE_DUMPED_DATA = True#After the significant SA dump is made, just load the dump for quick process
+TOX21_FILE = "NR-AR"
+SARPY_FILE = "nr_ar"
+BIOALERT_FILE = "nr-ar_bioalerts"
+NN_FILE_NUMBER = "2"
+ZSCORE = 2.58
 
 
-def idxForSignificants(th_, aWeight):
-    retlist = []
-    for idx, ele in enumerate(aWeight):
-        if ele >= th_:
-            retlist.append(idx)
-    return retlist
+#load validation and test for comparison.
+def loadValTest(NN_FILE_NUMBER):
+    file_test = "saved/save_igtest" + NN_FILE_NUMBER
+    file_valid = "saved/save_igvalid" + NN_FILE_NUMBER
+    IGweights2, teststr2 = pickle.load(open(file_test, "rb"))
+    IGweights3, teststr3 = pickle.load(open(file_valid, "rb"))
+    return IGweights2, teststr2, IGweights3, teststr3
 
-def sigIdxAtom(sigIdx, currSmiList):
-    sigIdx_general, sigIdx_atom = [], []
-    twoChars = {"Al": 1, "Au": 1, "Ag": 1, "As": 1, "Ba": 1, "Be": 1, "Bi": 1, "Br": 1, "Ca": 1, "Cd": 1, "Cl": 1,
-                "Co": 1, "Cr": 1, "Cu": 1, "Dy": 1, "Fe": 1, "Gd": 1, "Ge": 1, "In": 1, "Li": 1, "Mg": 1, "Mn": 1,
-                "Mo": 1, "Na": 1, "Ni": 1, "Nd": 1, "Pb": 1, "Pt": 1, "Pd": 1, "Ru": 1, "Sb": 1, "Se": 1, "se": 1,
-                "Si": 1, "Sn": 1, "Sr": 1, "Ti": 1, "Tl": 1, "Yb": 1, "Zn": 1, "Zr": 1}
-    atomcnt = -1#first atom is 0
-    for idx, ele in enumerate(currSmiList):
-        if ele in twoChars or ele.isalpha():# or ele.isdigit():
-            if ele == "@" or ele == "H":#these are the same as the bond signals
-                continue
-            atomcnt += 1
-            if idx in sigIdx:
-                sigIdx_general.append(idx)
-                sigIdx_atom.append(atomcnt)
-    return sigIdx_general, sigIdx_atom
 
-def get_substruct(mol, atom_idx_list, radius = 3):
-    # this function creates submolecules
-    smiDic = {}#key, value: <substr in str, list of amap> / each of the amap elements are the indices of the significant atoms
-    for r in range(2, radius)[::-1]:
-        #can extract the submolecule consisting of all atoms within a radius of r of atom_idx
-        for atom_idx in atom_idx_list:
-            #print("atom_idx", atom_idx, Chem.MolToSmiles(mol))
-            env = Chem.FindAtomEnvironmentOfRadiusN(mol, r, atom_idx)
-            amap = {}#key, val = <significant atom index(different from whole index, order)>
-            submol = Chem.PathToSubmol(mol, env, atomMap=amap)
-            subsmi = Chem.MolToSmiles(submol)
-
-            if subsmi != "":
-                #found the submolecule
-                #break
-                smiDic[subsmi] = amap.keys()
-    return smiDic
-
-#I found that the atommap attaches special bond characters (not all cases...) if they are inside the consecutive atoms
-#this func insert the sign "-" between the indicies of the succesive atoms
-def get_span_indicies(dicSubstrAmap):
-    dicSpan = {}
-    for substr, atomlist in dicSubstrAmap.items():
-        spanlist = []
-        prevIndex = -999
-        for i, atomIndex in enumerate(atomlist):
-            if atomIndex - prevIndex == 1:
-                spanlist.append("-")
-
-            spanlist.append(atomIndex)
-            prevIndex = atomIndex
-        dicSpan[substr] = spanlist
-    return dicSpan
-
-#the atommap of the rdkit calculates atom indicies only. this func changes it into a true SMILES indicies
-def get_real_indicies(dicSpan, currSmiList, bond_score_include=True):
-    twoChars = {"Al": 1, "Au": 1, "Ag": 1, "As": 1, "Ba": 1, "Be": 1, "Bi": 1, "Br": 1, "Ca": 1, "Cd": 1, "Cl": 1,
-                "Co": 1, "Cr": 1, "Cu": 1, "Dy": 1, "Fe": 1, "Gd": 1, "Ge": 1, "In": 1, "Li": 1, "Mg": 1, "Mn": 1,
-                "Mo": 1, "Na": 1, "Ni": 1, "Nd": 1, "Pb": 1, "Pt": 1, "Pd": 1, "Ru": 1, "Sb": 1, "Se": 1, "se": 1,
-                "Si": 1, "Sn": 1, "Sr": 1, "Ti": 1, "Tl": 1, "Yb": 1, "Zn": 1, "Zr": 1}
-    dicReal = {}
-    for substr, spanlist in dicSpan.items():
-        listtmp = []
-        atomcnt = -1  # first atom is 0
-        idx_span = 0
-        includeFlag = False
-        for idx, ele in enumerate(currSmiList):
-            if ele in twoChars or ele.isalpha():  # or ele.isdigit():
-                if ele == "@" or ele == "H":  # these are the same as the bond signals
-                    continue
-                atomcnt += 1
-                if atomcnt == spanlist[idx_span]:
-                    includeFlag = False
-                    listtmp.append(idx)
-                    idx_span += 1
-                    if len(spanlist) == idx_span:
-                        break
-                    if spanlist[idx_span] == "-":
-                        idx_span += 1
-                        includeFlag = True
-            if includeFlag and bond_score_include:
-                listtmp.append(idx)
-        dicReal[substr] = listtmp
-    return dicReal
-
-# this function updates dicSMA
-#key, value: <substr in str, list of scores> / each of the scores are the sum of the atoms in the smart
-def get_scores(dicReal, layer_weights, dicSMA):
-    for substr, realIndicies in dicReal.items():
-        score = 0.0
-        for i in realIndicies:
-            score += layer_weights[i]
-        if substr in dicSMA:
-            dicSMA[substr].append(score)
-        else:
-            dicSMA[substr] = [score]
-
-#extract importnat structures using z-score over 2.58
-def setThreshold(gmSMA):
-    cnt = 0
-    print(len(gmSMA))
-    #get the key and value arrays from dict
-    keylist, vallist = [], []
-    for key, val in gmSMA.items():
-        keylist.append(key)
-        vallist.append(val)
-
-    nparray = np.array(vallist)
-    zscorearray = stats.zscore(nparray)
-
-    return keylist, zscorearray
+#make a dict of SMILES from Val and Test set for comparison.
+def dicSMILESValTest(teststr2, teststr3):
+    dictValAndTest = {}
+    valAndTest = teststr2 + teststr3
+    for currSmiList in valAndTest:
+        currsmi = "".join(currSmiList)
+        dictValAndTest[currsmi] = 1
+    return dictValAndTest
     
-#extract importnat structures
-def extSigSA(keylist, zscorearray):
-    retSAs = []
-    for i, zval in enumerate(zscorearray):
-        if zval >= 2.58:
-            retSAs.append(keylist[i])
-    return retSAs
     
-   
+# make subst_mols_NN dict for ease of code
+def GenSubstMolsNN(extractedSigSADict):
+    subst_mols_NN = {}  # key, val = <substructure mol, list of (original mol, list of amap)>
+    for key, val in extractedSigSADict.items():
+        submol = Chem.MolFromSmarts(key)
+        subst_mols_NN[submol] = val
+    return subst_mols_NN
+    
+    
 #############################
-#main code starts
-if not USE_DUMPED_DATA:
-    IGweights1, teststr1 = pickle.load(open( "save_igtrain2", "rb" ))
-    IGweights2, teststr2 = pickle.load(open( "save_igtest2", "rb" ))
-    IGweights3, teststr3 = pickle.load(open( "save_igvalid2", "rb" ))
-
-    #make dicSMA
-    #key, value: <substr in str, list of scores> / each of the scores are the sum of the atoms in the smart
-    dicSMA = {}
-    layer1_sum = tf.math.reduce_sum(IGweights1, axis=2)#layer1_max shape = (whole_size, seq_len)
-    layer2_sum = tf.math.reduce_sum(IGweights2, axis=2)
-    layer3_sum = tf.math.reduce_sum(IGweights3, axis=2)
-    layer_sum = tf.keras.layers.concatenate([layer1_sum, layer2_sum, layer3_sum], axis=0)
-
-    teststrs = teststr1 + teststr2 + teststr3
+# main code starts
+if not USE_DUMPED_DATA:#After the significant SA dump is made, just load the dump for quick process
+    file_train = "saved/save_igtrain" + NN_FILE_NUMBER
+    IGweights1, teststr1 = pickle.load(open(file_train, "rb"))
+    
+    # make dicSAs for all SAs
+    # key, value: <substr in str, list of scores> / each of the scores are the sum of the atoms in the smart
+    dicSAs = {}
+    # make dicOriAmap to store original Mol and SAs
+    # key, value: <substr in str, [orimol, list of amap]>
+    dicOriAmap = {}
+    layer1_sum = tf.math.reduce_max(IGweights1, axis=2)  # layer1_max shape = (whole_size, seq_len)
+    layer_sum = layer1_sum#tf.keras.layers.concatenate([layer1_sum, layer2_sum, layer3_sum], axis=0)
+    teststrs = teststr1# + teststr2 + teststr3
     assert len(layer_sum) == len(teststrs)
 
     shared, notShared = 0, 0
@@ -175,136 +81,143 @@ if not USE_DUMPED_DATA:
         currmol = Chem.MolFromSmiles(currsmi)
 
         th_Until7thW = sorted(layer_sum[i])[-7]
+        #pick the significant indicies that have high enough weights above certain threshold (7th elements from the biggest)
         sigIdxList = idxForSignificants(th_Until7thW, layer_sum[i])
+        #Since atoms are our main concern, separate the indicies of atoms from the significant indicies 
         sigIdx_general, sigIdx_atom = sigIdxAtom(sigIdxList, currSmiList)
-        dicSubstrAmap = get_substruct(currmol, sigIdx_atom)#substrs of the current smi
-        dicSpan = get_span_indicies(dicSubstrAmap)
-        dicReal = get_real_indicies(dicSpan, currSmiList, bond_score_include=False)
-        get_scores(dicReal, layer_sum[i], dicSMA)
+        #creates submolecules from the significant atoms using rdkit
+        #also, create orimol_atomI tuple. orimol_atomI is for the comparison part
+        dicSubstrAmap, orimol_atomI = get_substruct(currmol, sigIdx_atom)
+        # the atommap of the rdkit calculates atom indicies while integrated gradients are based on SMILES.
+        # this func changes the atommap indicies into a SMILES indicies 
+        dicReal = get_real_indicies(dicSubstrAmap, currSmiList, bond_score_include=False)
+        # get_scores function updates dicSAs and dicOriMap
+        get_scores(dicReal, layer_sum[i], orimol_atomI, dicSAs, dicOriAmap)
 
-    #calculate global mean score of every substrs
+    # calculate global mean score of every substrs
     gmSMA = {}
-    for key, val in dicSMA.items():
+    for key, val in dicSAs.items():
         gmSMA[key] = np.mean(val)
-
-    keylist, zscorearray = setThreshold(gmSMA)
-    extractedSigSA = extSigSA(keylist, zscorearray)
-    pickle.dump(extractedSigSA, open( "extractedSA2.pickle", "wb" ) )
+        
+    # make the score list into z-score arrays
+    keylist, zscorearray = getZscores(gmSMA)
+    # extract importnat structures that contain high z-scores
+    # key, val = <substr in str, list of (orimol, list of amap)>
+    extractedSigSADict = extSigSA(keylist, zscorearray, dicOriAmap, ZSCORE)
+    pickle.dump(extractedSigSADict, open("extractedSA"+ NN_FILE_NUMBER +".pickle", "wb"))
 else:
-    extractedSigSA = pickle.load(open( "extractedSA2.pickle", "rb" ))
-print(len(extractedSigSA))
+    extractedSigSADict = pickle.load(open("extractedSA"+ NN_FILE_NUMBER +".pickle", "rb"))
     
-#To compare extracted Significant SA with other SAs, load SAs from bioalerts
-bioalert_subst = pickle.load(open( "nr-ar_bioalerts", "rb" ))
+print("num of extracted SAs: ", len(extractedSigSADict))
+subst_mols_NN = GenSubstMolsNN(extractedSigSADict)
 
-###########################
-#this part is for checking only
-dic0 = {}
-act1, act0 = 0, 0
-for idx, key in enumerate(bioalert_subst['Substructure in Molecule']):#molecule duplicated
-    actlabel = bioalert_subst['Activity label'][idx]
-    if actlabel == 1.0:
-        act1 += 1
-        dic0[Chem.MolToSmiles(key)] = 1
-    else:
-        act0 += 1
-        if Chem.MolToSmiles(key) in dic0 and dic0[Chem.MolToSmiles(key)] == 1:
-            dic0[Chem.MolToSmiles(key)] = 1
-        else:
-            dic0[Chem.MolToSmiles(key)] = 0
-print("##############bioalerts#############")
-print("positive:", act1, "negative:", act0, "unique smiles key:",len(dic0))
-############################
 
-#make substructure (mol class) list from bioalerts
-subst_dics_bioalert = {}
-subst_mols_bioalert = {}
-for idx, key in enumerate(bioalert_subst["Substructure"]):
-    subsmi = Chem.MolToSmiles(key)
-    if subsmi not in subst_dics_bioalert:
-        subst_dics_bioalert[subsmi] = 1
-        subst_mols_bioalert[key] = subsmi
+#validation and test for comparison.
+IGweights2, teststr2, IGweights3, teststr3 = loadValTest(NN_FILE_NUMBER)
+dictValAndTest = dicSMILESValTest(teststr2, teststr3)#make a dict of SMILES from Val and Test set
+    
 
-#substructures from bioalerts usually have similar structures => make uninque list
-def rdkit_unique(subst_mols):
-    subst_mols_unique = {}
-    for key in subst_mols.keys():
-        flag = False
-        for key2 in subst_mols_unique.keys():
-            if key == key2:
-                contiune
-            try:
-                if key.HasSubstructMatch(key2):
-                    flag = True
-                    break
-            except:
-                flag = True
-                break
-        if not flag:
-            subst_mols_unique[key] = subst_mols[key]
-    print(len(subst_mols_unique))
-    return subst_mols_unique
 
+#############################
+# comparison code starts
+# load SAs from bioalerts
+bioalertFname = "refData/" + BIOALERT_FILE
+bioalert_subst = pickle.load(open(bioalertFname, "rb"))#actually the data types are different from bioalerts and sarpy
+subst_mols_bioalert = load_bioalert(bioalert_subst)
 subst_mols_bioalertU = rdkit_unique(subst_mols_bioalert)
 
+# load SAs from sarpy
+subst_mols_sarpy = load_sarpy(SARPY_FILE)
 
-#make substructure (mol class) list from neural network
-subst_dics_NN = {}
-subst_mols_NN = {}
-for subsmi in extractedSigSA:
-    submol = Chem.MolFromSmarts(subsmi)
-    if subsmi not in subst_dics_NN:
-        subst_dics_NN[subsmi] = 1
-        subst_mols_NN[submol] = subsmi
-
-#subst_mols_NNU = rdkit_unique(subst_mols_NN) <= not required if the instances are too small
-
-#compare substructures from NN with those from the bioalerts
-cntShared = 0
-for key, val in subst_mols_NN.items():
-    flag = False
-    for key2, val2 in subst_mols_bioalertU.items():
-        if len(val) > len(val2):
-            if key.HasSubstructMatch(key2):
-                flag = True
-                break
-        else:
-            if key2.HasSubstructMatch(key):
-                flag = True
-                break
-    if flag:
-        cntShared += 1
-print(cntShared, len(subst_mols_NN), len(subst_mols_bioalertU))
+#comparison code
+compareWithAtomUnits(subst_mols_NN, subst_mols_bioalertU)
+compareWithAtomUnits(subst_mols_NN, subst_mols_sarpy)
 
 
-#To compare extracted Significant SA with other SAs, load SAs from sarpy
-subst_dics_sarpy = {}#this is required, since MOL class is hard to distinguish each other
-subst_mols_sarpy = {}
-f = open("nr_ar_sarpy.txt", "r")
-lines = f.readlines()
-for i, line in enumerate(lines):
-    if i == 0:
-        continue
-    splitted = line.split("\t")
-    if splitted[0] not in subst_dics_sarpy:
-        subst_dics_sarpy[splitted[0]] = 1
-        subst_mols_sarpy[Chem.MolFromSmarts(splitted[0])] = splitted[0]
-f.close()
 
-#=> make uninque list
-subst_mols_sarpyU = rdkit_unique(subst_mols_sarpy)
 
-#compare substructures from NN with those from the bioalerts
-cntShared = 0
-for key, val in subst_mols_NN.items():
-    flag = False
-    for key2, val2 in subst_mols_sarpyU.items():
-        try:
-            if key.HasSubstructMatch(key2):
-                flag = True
-                break
-        except:
+
+
+
+###############################
+####Not in the poster paper####
+###############################
+
+# For better analysis, we will calculate ratio for positive that contains SAs
+def loadTox21Field(proteinName):
+    listX, listY = [], []
+    listXsmi = []
+    afile = './TOX21/' + proteinName + '_wholetraining.smiles'
+    f = open(afile, "r")
+    lines = f.readlines()
+    for line in lines:
+        splitted = line.split(" ")
+        if len(splitted[0]) >= 200:
             continue
-    if flag:
-        cntShared += 1
-print(cntShared, len(subst_mols_NN), len(subst_mols_sarpyU))
+        listX.append(Chem.MolFromSmiles(splitted[0]))
+        listXsmi.append(splitted[0])
+        listY.append(float(splitted[1]))
+    f.close()
+    return listX, listY, listXsmi
+
+
+listX, listY, listXsmi = loadTox21Field(TOX21_FILE)
+
+
+def computeONLYStat(listX, listY, currModel, currModelName):
+    cntOnlyP, cntOnlyN = 0, 0
+    for submol in currModel.keys():
+        prevLable = 0
+        isMixed = False
+        for idx, orimol in enumerate(listX):
+            if orimol.HasSubstructMatch(submol):
+                if listY[idx] == 1:
+                    if prevLable == -1:
+                        isMixed = True
+                    prevLable = 1
+                else:
+                    if prevLable == 1:
+                        isMixed = True
+                    prevLable = -1
+        if isMixed == False:
+            if prevLable == 1:
+                cntOnlyP += 1
+            elif prevLable == -1:
+                cntOnlyN += 1
+
+    print("SAs from", currModelName, cntOnlyP, cntOnlyN)
+
+print("            cntOnlyP, cntOnlyN")
+computeONLYStat(listX, listY, subst_mols_NN, "NN")
+computeONLYStat(listX, listY, subst_mols_bioalertU, "bioialerts")
+computeONLYStat(listX, listY, subst_mols_sarpy, "sarpy")
+
+
+#the difference between above code: screening only in the validation and the test set
+def computeValTestStat(listX, listY, listXsmi, currModel, currModelName, dictValAndTest):
+    cntOnlyP, cntOnlyN = 0, 0
+    for submol in currModel.keys():
+        prevLable = 0
+        isMixed = False
+        for idx, orimol in enumerate(listX):
+            if listXsmi[idx] not in dictValAndTest:
+                continue
+            if orimol.HasSubstructMatch(submol):
+                if listY[idx] == 1:
+                    if prevLable == -1:
+                        isMixed = True
+                    prevLable = 1
+                else:
+                    if prevLable == 1:
+                        isMixed = True
+                    prevLable = -1
+        if isMixed == False:
+            if prevLable == 1:
+                cntOnlyP += 1
+            elif prevLable == -1:
+                cntOnlyN += 1
+
+    print("ValTestStat  SAs from", currModelName, cntOnlyP, cntOnlyN)
+computeValTestStat(listX, listY, listXsmi, subst_mols_NN, "NN", dictValAndTest)
+computeValTestStat(listX, listY, listXsmi, subst_mols_bioalertU, "bioialerts", dictValAndTest)
+computeValTestStat(listX, listY, listXsmi, subst_mols_sarpy, "sarpy", dictValAndTest)
